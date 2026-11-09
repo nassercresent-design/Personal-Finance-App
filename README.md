@@ -5,11 +5,11 @@ No accounts, no server, no cost. Everything is stored on the phone.
 
 ## What's in this version
 
-- Home: this month's spending, budget progress, budget cards, recent entries
-- Add / edit / delete expenses and income (keypad, category, date, payment method, note)
-- Activity: everything grouped by day, with search and an expense/income filter
-- Budgets: set a monthly limit per category
-- Settings: back up (JSON), export to CSV, restore from a backup, delete all data
+- Home: your balance (starting balance + income − expenses), money in and out this month, recent entries
+- Add / edit / delete money going out (expense) and coming in (income), with category, date, payment method and note
+- Activity: everything grouped by day, with your balance after each entry, plus search and an in/out filter
+- Spending: a chart of where your money went each month, by category; tap a category to see its entries
+- Settings: starting balance, back up (JSON), export to CSV, restore from a backup, delete all data
 - Backup reminder on Home when the last backup is more than 7 days old
 - Works offline after the first visit
 
@@ -59,7 +59,7 @@ The code is public, but your data is not. It never leaves your phone.
 ## Updating the app
 
 1. Change the files and upload them again.
-2. In `sw.js`, change `const CACHE = 'finance-v2'` to `'finance-v3'` (and so on) every time.
+2. In `sw.js`, change `const CACHE = 'finance-v5'` to `'finance-v6'` (and so on) every time.
 3. Close and reopen the app on your phone once or twice to pick up the new version.
 
 Your data is not affected by updates.

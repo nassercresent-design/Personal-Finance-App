@@ -2,8 +2,8 @@ import { db } from './db.js';
 import * as U from './utils.js';
 
 const app = document.getElementById('app');
-const state = { txns: [], budgets: {}, lastBackup: null, lastMethod: 'UPI' };
-const ui = { activity: { q: '', type: 'all' } };
+const state = { txns: [], lastBackup: null, lastMethod: 'UPI', startingBalance: 0 };
+const ui = { activity: { q: '', type: 'all', focus: null }, spending: { month: null } };
 let hasNavigated = false;
 let cleanup = null;
 
@@ -25,6 +25,8 @@ const ICON = {
   check: svg('<path d="m5 12 5 5 9-10"/>'),
   alert: svg('<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/>'),
   receipt: svg('<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>'),
+  back: svg('<path d="m15 18-6-6 6-6"/>'),
+  chevR: svg('<path d="m9 6 6 6-6 6"/>'),
   trash: svg('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>')
 };
 
@@ -36,9 +38,9 @@ async function load() {
     (b.time || '').localeCompare(a.time || '') ||
     (b.createdAt || 0) - (a.createdAt || 0));
   state.txns = txns;
-  state.budgets = (await db.get('budgets')) || {};
   state.lastBackup = (await db.get('lastBackup')) || null;
   state.lastMethod = (await db.get('lastMethod')) || 'UPI';
+  state.startingBalance = (await db.get('startingBalance')) || 0;
 }
 
 function monthExpenses() {
@@ -46,17 +48,27 @@ function monthExpenses() {
   return state.txns.filter((t) => t.type === 'expense' && t.date.startsWith(mk));
 }
 
-function spentIn(categoryId, expenses = monthExpenses()) {
-  return U.sum(expenses.filter((t) => t.category === categoryId));
+// Balance = starting balance + all income − all expenses.
+function balance() {
+  return state.txns.reduce((n, t) => n + (t.type === 'income' ? t.amount : -t.amount), state.startingBalance);
 }
 
-function totalBudget() {
-  return Object.values(state.budgets).reduce((a, b) => a + b, 0);
+function runningBalances() {
+  const after = new Map();
+  let running = state.startingBalance;
+  for (let i = state.txns.length - 1; i >= 0; i--) {
+    const t = state.txns[i];
+    running += t.type === 'income' ? t.amount : -t.amount;
+    after.set(t.id, running);
+  }
+  return after;
 }
 
-// Only spending in categories that have a limit counts against the budget.
-function budgetedSpend(expenses = monthExpenses()) {
-  return Object.keys(state.budgets).reduce((n, id) => n + spentIn(id, expenses), 0);
+const signedTotal = (paise) => (paise < 0 ? '−' : '') + U.money(paise);
+
+function monthIncome() {
+  const mk = U.monthKey(U.todayISO());
+  return state.txns.filter((t) => t.type === 'income' && t.date.startsWith(mk));
 }
 
 // ---------- Shared pieces ----------
@@ -64,7 +76,7 @@ function tabBar(active) {
   const tabs = [
     ['home', 'Home', ICON.home],
     ['activity', 'Activity', ICON.list],
-    ['budgets', 'Budgets', ICON.pie],
+    ['spending', 'Spending', ICON.pie],
     ['settings', 'Settings', ICON.sliders]
   ];
   return `<nav class="tabbar" aria-label="Main"><div class="inner">${tabs
@@ -73,16 +85,19 @@ function tabBar(active) {
     .join('')}</div></nav>`;
 }
 
-const fab = () => `<a class="fab" href="#/add" aria-label="Add expense">${ICON.plus}</a>`;
+const fab = () => `<a class="fab" href="#/add" aria-label="Add entry">${ICON.plus}</a>`;
 
-function txRow(t, showDay) {
+function txRow(t, showDay, after) {
   const c = U.category(t.category);
   const title = t.note || c.name;
   const meta = `${c.name} · ${showDay ? U.dayLabel(t.date) : t.method || ''}`;
   return `<a class="tx" href="#/edit/${encodeURIComponent(t.id)}">
     <div class="avatar" style="background:${c.color}">${U.esc(title.charAt(0).toUpperCase())}</div>
     <div class="info"><div class="title">${U.esc(title)}</div><div class="meta">${U.esc(meta)}</div></div>
-    <div class="amount num ${t.type === 'income' ? 'in' : ''}">${U.signedMoney(t)}</div>
+    <div class="right">
+      <div class="amount num ${t.type === 'income' ? 'in' : ''}">${U.signedMoney(t)}</div>
+      ${after !== undefined ? `<div class="after num ${after < 0 ? 'is-over' : ''}">${signedTotal(after)}</div>` : ''}
+    </div>
   </a>`;
 }
 
@@ -111,41 +126,10 @@ function goBack() {
 // ---------- Home ----------
 function renderHome() {
   const today = U.todayISO();
-  const expenses = monthExpenses();
-  const spent = U.sum(expenses);
-  const budget = totalBudget();
-
-  let badge = '';
-  let barWidth = 0;
-  let bottom;
-  if (budget) {
-    const counted = budgetedSpend(expenses);
-    const used = Math.round((counted / budget) * 100);
-    const left = budget - counted;
-    badge = `<span class="badge">${used}% used</span>`;
-    barWidth = Math.min(100, used);
-    bottom = `<div class="row">
-      <span>${left >= 0 ? `<b>${U.money(left)} left</b>` : `<b>${U.money(-left)} over</b>`} <span class="dim">of ${U.money(budget)} budget</span></span>
-      <span class="dim">${U.daysLeftInMonth()} days to go</span>
-    </div>`;
-  } else {
-    bottom = `<div class="row"><span class="dim">No budget set</span><a class="badge" href="#/budgets">Set a budget</a></div>`;
-  }
-
-  const budgetCards = Object.entries(state.budgets)
-    .map(([id, limit]) => ({ c: U.category(id), limit, spent: spentIn(id, expenses) }))
-    .sort((a, b) => b.spent / b.limit - a.spent / a.limit)
-    .slice(0, 3)
-    .map(({ c, limit, spent: s }) => {
-      const over = s > limit;
-      return `<a class="budget-card" href="#/budgets">
-        <div class="cat">${c.name}</div>
-        <div class="amt num ${over ? 'is-over' : ''}">${U.money(s)}</div>
-        <div class="bar light ${over ? 'over' : ''}"><i style="width:${Math.min(100, Math.round((s / limit) * 100))}%"></i></div>
-        <div class="lim num ${over ? 'is-over' : ''}">${over ? `${U.money(s - limit)} over` : `of ${U.money(limit)}`}</div>
-      </a>`;
-    })
-    .join('');
+  const bal = balance();
+  const moneyIn = U.sum(monthIncome());
+  const moneyOut = U.sum(monthExpenses());
+  const hasBase = state.startingBalance > 0 || state.txns.some((t) => t.type === 'income');
 
   const needsBackup = state.txns.length > 0 && U.daysSince(state.lastBackup) > 7;
   const banner = needsBackup
@@ -160,33 +144,33 @@ function renderHome() {
       </section>`
     : `<div class="empty">
         <div class="illus">${ICON.receipt}</div>
-        <h3>No expenses yet</h3>
-        <p>Add your first expense to see where your money goes this month.</p>
-        <a class="btn btn-primary btn-pill" href="#/add">${ICON.plus} Add expense</a>
+        <h3>Nothing added yet</h3>
+        <p>Set your starting balance, then add money as it goes out or comes in.</p>
+        <a class="btn btn-primary btn-pill" href="#/add">${ICON.plus} Add entry</a>
       </div>`;
 
   app.innerHTML = `<main class="screen">
-    <header class="header"><div><div class="sub">${U.monthName(today)}</div><h1>Overview</h1></div></header>
+    <header class="header"><div><div class="sub">${new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</div><h1>Overview</h1></div></header>
     ${banner}
-    <section class="summary" aria-label="This month">
-      <div class="row"><span class="label">Spent this month</span>${badge}</div>
-      <div class="total num">${U.money(spent)}</div>
-      <div class="bar"><i style="width:${barWidth}%"></i></div>
-      ${bottom}
+    <section class="summary" aria-label="Balance">
+      <span class="label">Balance</span>
+      <div class="total num ${bal < 0 ? 'neg' : ''}">${signedTotal(bal)}</div>
+      ${hasBase ? '' : '<a class="badge start" href="#" data-action="starting-balance">Set starting balance</a>'}
     </section>
-    ${budgetCards ? `<section class="section">
-      <div class="section-head"><h2>Budgets</h2><a class="link" href="#/budgets">See all</a></div>
-      <div class="budget-row">${budgetCards}</div>
-    </section>` : ''}
+    <section class="flows" aria-label="${U.monthName(today)}">
+      <div class="flow-card"><span class="label">In this month</span><span class="value num in">${moneyIn ? '+' : ''}${U.money(moneyIn)}</span></div>
+      <a class="flow-card" href="#/spending"><span class="label">Out this month</span><span class="value num">${moneyOut ? '−' : ''}${U.money(moneyOut)}</span><span class="more">See where it went ›</span></a>
+    </section>
     ${recentBlock}
   </main>${fab()}${tabBar('home')}`;
 }
 
 // ---------- Activity ----------
 function renderActivity() {
-  const types = [['all', 'All'], ['expense', 'Expenses'], ['income', 'Income']];
+  const types = [['all', 'All'], ['expense', 'Money out'], ['income', 'Money in']];
   app.innerHTML = `<main class="screen">
     <header class="header"><h1>Activity</h1></header>
+    ${ui.activity.focus ? `<div class="focus">Showing <b>${U.category(ui.activity.focus.category).name}</b> in ${U.monthName(ui.activity.focus.month + '-01')}<button data-action="clear-focus">Show all</button></div>` : ''}
     <label class="search">${ICON.search}<input type="search" id="q" placeholder="Search transactions" aria-label="Search transactions" value="${U.esc(ui.activity.q)}"></label>
     <div class="chips scroll" role="group" aria-label="Filter">${types
       .map(([v, l]) => `<button class="chip ${ui.activity.type === v ? 'on' : ''}" data-type="${v}" aria-pressed="${ui.activity.type === v}">${l}</button>`)
@@ -197,7 +181,9 @@ function renderActivity() {
   const groupsEl = app.querySelector('#groups');
   const draw = () => {
     const q = ui.activity.q.trim().toLowerCase();
+    const focus = ui.activity.focus;
     const list = state.txns.filter((t) => {
+      if (focus && (t.category !== focus.category || !t.date.startsWith(focus.month))) return false;
       if (ui.activity.type !== 'all' && t.type !== ui.activity.type) return false;
       if (!q) return true;
       const c = U.category(t.category);
@@ -205,7 +191,7 @@ function renderActivity() {
     });
 
     if (!state.txns.length) {
-      groupsEl.innerHTML = `<div class="empty"><div class="illus">${ICON.list}</div><h3>No transactions yet</h3><p>Everything you add will show up here, grouped by day.</p></div>`;
+      groupsEl.innerHTML = `<div class="empty"><div class="illus">${ICON.list}</div><h3>No transactions yet</h3><p>Everything you add shows up here by day, with your balance after each entry.</p></div>`;
       return;
     }
     if (!list.length) {
@@ -218,12 +204,13 @@ function renderActivity() {
       if (!groups.has(t.date)) groups.set(t.date, []);
       groups.get(t.date).push(t);
     }
+    const after = runningBalances();
     groupsEl.innerHTML = [...groups.entries()]
       .map(([date, items]) => {
         const net = items.reduce((n, t) => n + (t.type === 'income' ? t.amount : -t.amount), 0);
         return `<div class="day-group">
           <div class="day-head"><span>${U.dayLabel(date)}</span><span class="num">${net >= 0 ? '+' : '−'}${U.money(net)}</span></div>
-          <div class="list">${items.map((t) => txRow(t, false)).join('')}</div>
+          <div class="list">${items.map((t) => txRow(t, false, after.get(t.id))).join('')}</div>
         </div>`;
       })
       .join('');
@@ -245,74 +232,13 @@ function renderActivity() {
   draw();
 }
 
-// ---------- Budgets ----------
-function renderBudgets() {
-  const expenses = monthExpenses();
-  const spent = U.sum(expenses);
-  const budget = totalBudget();
-  const month = new Date().toLocaleDateString('en-IN', { month: 'long' });
-
-  const summary = budget
-    ? (() => {
-        const counted = budgetedSpend(expenses);
-        const left = budget - counted;
-        const used = Math.round((counted / budget) * 100);
-        return `<section class="summary">
-          <div class="row"><span class="label">${month} budget</span><span class="dim">${U.daysLeftInMonth()} days left</span></div>
-          <div class="total num" style="font-size:32px">${U.money(counted)} <span class="dim" style="font-size:15px;font-weight:400;letter-spacing:0">of ${U.money(budget)}</span></div>
-          <div class="bar"><i style="width:${Math.min(100, used)}%"></i></div>
-          <div class="row"><span>${left >= 0 ? `<b>${U.money(left)} left</b>` : `<b>${U.money(-left)} over</b>`}</span><span class="dim">${used}% used</span></div>
-        </section>`;
-      })()
-    : `<section class="summary">
-        <span class="label">${month} budget</span>
-        <div class="total num" style="font-size:32px">${U.money(spent)} <span class="dim" style="font-size:15px;font-weight:400;letter-spacing:0">spent</span></div>
-        <span class="dim" style="font-size:13px">Tap a category below to set a monthly limit.</span>
-      </section>`;
-
-  const rows = [...U.EXPENSE_CATEGORIES]
-    .sort((a, b) => (state.budgets[b.id] ? 1 : 0) - (state.budgets[a.id] ? 1 : 0))
-    .map((c) => {
-      const limit = state.budgets[c.id] || 0;
-      const s = spentIn(c.id, expenses);
-      const over = limit && s > limit;
-      const right = !limit
-        ? '<span class="pct set-limit">Set limit</span>'
-        : over
-          ? `<span class="pct num is-over">${U.money(s - limit)} over</span>`
-          : `<span class="pct num">${Math.round((s / limit) * 100)}%</span>`;
-      const meta = limit ? `${U.money(s)} of ${U.money(limit)}` : s ? `${U.money(s)} spent` : 'No limit';
-      return `<button class="bud" data-cat="${c.id}" aria-label="${c.name} budget">
-        <div class="bud-top">
-          <div class="avatar" style="background:${c.color}">${c.name.charAt(0)}</div>
-          <div class="info"><div class="name">${c.name}</div><div class="meta num">${meta}</div></div>
-          ${right}
-        </div>
-        ${limit ? `<div class="bar light ${over ? 'over' : ''}"><i style="width:${Math.min(100, Math.round((s / limit) * 100))}%"></i></div>` : ''}
-      </button>`;
-    })
-    .join('');
-
-  app.innerHTML = `<main class="screen">
-    <header class="header"><h1>Budgets</h1></header>
-    ${summary}
-    <section class="section">
-      <div class="section-head"><h2>Categories</h2></div>
-      <div class="list divided">${rows}</div>
-    </section>
-  </main>${tabBar('budgets')}`;
-
-  app.querySelectorAll('.bud').forEach((btn) =>
-    btn.addEventListener('click', () => openBudgetDialog(U.category(btn.dataset.cat))));
-}
-
-function openBudgetDialog(c) {
-  const current = state.budgets[c.id] || 0;
+function openStartingBalanceDialog() {
+  const current = state.startingBalance;
   const dialog = document.createElement('dialog');
   dialog.innerHTML = `<form method="dialog">
-    <h2>${c.name} budget</h2>
-    <p>Monthly limit in rupees. Leave it empty to remove the limit.</p>
-    <input class="input num" name="amount" inputmode="numeric" pattern="[0-9]*" placeholder="e.g. 10000" aria-label="Monthly limit" value="${current ? current / 100 : ''}">
+    <h2>Starting balance</h2>
+    <p>The total you had before your first entry. Your balance is this amount, plus income, minus expenses.</p>
+    <input class="input num" name="amount" inputmode="decimal" placeholder="e.g. 50000" aria-label="Starting balance" value="${current ? U.amountToInput(current) : ''}">
     <div class="dialog-actions">
       <button class="btn btn-secondary" value="cancel">Cancel</button>
       <button class="btn btn-primary" value="save">Save</button>
@@ -328,18 +254,98 @@ function openBudgetDialog(c) {
   });
   dialog.addEventListener('close', async () => {
     if (dialog.returnValue === 'save') {
-      const rupees = parseInt(input.value.replace(/[^0-9]/g, '') || '0', 10);
-      const budgets = { ...state.budgets };
-      if (rupees > 0) budgets[c.id] = rupees * 100;
-      else delete budgets[c.id];
-      await db.set('budgets', budgets);
+      const cleaned = input.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1');
+      await db.set('startingBalance', U.parseAmount(cleaned));
       await load();
-      toast(rupees > 0 ? 'Budget saved' : 'Limit removed');
+      toast('Starting balance saved');
       route();
     }
     dialog.remove();
   });
   dialog.showModal();
+}
+
+// ---------- Spending ----------
+function donut(rows, total) {
+  const r = 70;
+  const circ = 2 * Math.PI * r;
+  const gap = rows.length > 1 ? 3 : 0;
+  let offset = 0;
+  const segments = rows.map((row) => {
+    const full = (row.amount / total) * circ;
+    const len = Math.max(0, full - gap);
+    const seg = `<circle cx="90" cy="90" r="${r}" fill="none" stroke="${row.c.chart}" stroke-width="22" stroke-dasharray="${len} ${circ - len}" stroke-dashoffset="${-offset}"/>`;
+    offset += full;
+    return seg;
+  }).join('');
+  return `<svg class="donut" viewBox="0 0 180 180" aria-hidden="true"><g transform="rotate(-90 90 90)">
+    <circle cx="90" cy="90" r="${r}" fill="none" stroke="var(--line)" stroke-width="22"/>${segments}</g></svg>`;
+}
+
+function renderSpending() {
+  const current = U.monthKey(U.todayISO());
+  const mk = ui.spending.month || current;
+  const expenses = state.txns.filter((t) => t.type === 'expense' && t.date.startsWith(mk));
+  const total = U.sum(expenses);
+
+  const byCat = new Map();
+  for (const t of expenses) {
+    const e = byCat.get(t.category) || { amount: 0, count: 0 };
+    e.amount += t.amount;
+    e.count += 1;
+    byCat.set(t.category, e);
+  }
+  const rows = [...byCat.entries()]
+    .map(([id, v]) => ({ c: U.category(id), ...v }))
+    .sort((a, b) => b.amount - a.amount);
+
+  const prev = U.shiftMonth(mk, -1);
+  const next = U.shiftMonth(mk, 1);
+  const label = U.monthName(mk + '-01');
+
+  const body = total
+    ? `<section class="chart-card" aria-label="${label} spending by category">
+        <div class="donut-wrap">${donut(rows, total)}
+          <div class="donut-center"><span class="num">${U.money(total)}</span><span>spent</span></div>
+        </div>
+      </section>
+      <section class="section">
+        <div class="section-head"><h2>By category</h2></div>
+        <div class="list divided">${rows.map((row) => {
+          const pct = Math.round((row.amount / total) * 100);
+          return `<button class="cat-row" data-cat="${row.c.id}">
+            <span class="dot" style="background:${row.c.chart}"></span>
+            <span class="info">
+              <span class="name">${row.c.name}</span>
+              <span class="meta">${row.count} ${row.count === 1 ? 'entry' : 'entries'}</span>
+              <span class="bar light"><i style="width:${Math.max(2, pct)}%;background:${row.c.chart}"></i></span>
+            </span>
+            <span class="right"><span class="amount num">${U.money(row.amount)}</span><span class="meta num">${pct}%</span></span>
+          </button>`;
+        }).join('')}</div>
+      </section>`
+    : `<div class="empty"><div class="illus">${ICON.pie}</div><h3>No spending in ${label}</h3><p>Money you add as an expense will show up here by category.</p></div>`;
+
+  app.innerHTML = `<main class="screen">
+    <header class="header"><h1>Spending</h1></header>
+    <div class="month-nav">
+      <button class="icon-btn" data-month="${prev}" aria-label="Previous month">${ICON.back}</button>
+      <span>${label}</span>
+      <button class="icon-btn" data-month="${next}" aria-label="Next month" ${next > current ? 'disabled' : ''}>${ICON.chevR}</button>
+    </div>
+    ${body}
+  </main>${tabBar('spending')}`;
+
+  app.querySelectorAll('[data-month]').forEach((b) =>
+    b.addEventListener('click', () => {
+      ui.spending.month = b.dataset.month;
+      renderSpending();
+    }));
+  app.querySelectorAll('.cat-row').forEach((b) =>
+    b.addEventListener('click', () => {
+      ui.activity = { q: '', type: 'expense', focus: { category: b.dataset.cat, month: mk } };
+      location.hash = '#/activity';
+    }));
 }
 
 // ---------- Settings ----------
@@ -356,6 +362,10 @@ function renderSettings() {
       <div><div style="font-weight:500">${backupAge()}</div><div class="sub" style="font-weight:400;font-size:12px">${when} · ${state.txns.length} entries on this phone</div></div>
     </div>
     <section class="section" style="gap:10px">
+      <div class="group-title">Balance</div>
+      <div class="list"><button class="setting" data-action="starting-balance"><span><span class="t">Starting balance</span><span class="s">What you had before your first entry</span></span><span class="num value">${U.money(state.startingBalance)}</span></button></div>
+    </section>
+    <section class="section" style="gap:10px">
       <div class="group-title">Backup & export</div>
       <div class="list divided">
         <button class="setting" data-action="backup"><span><span class="t">Back up everything</span><span class="s">JSON file, for restoring later</span></span>${ICON.download}</button>
@@ -366,7 +376,7 @@ function renderSettings() {
     </section>
     <section class="section" style="gap:10px">
       <div class="group-title">Data</div>
-      <div class="list"><button class="setting danger" data-action="delete-all"><span><span class="t">Delete all data</span><span class="s">Removes every transaction and budget</span></span>${ICON.trash}</button></div>
+      <div class="list"><button class="setting danger" data-action="delete-all"><span><span class="t">Delete all data</span><span class="s">Removes every entry and your starting balance</span></span>${ICON.trash}</button></div>
     </section>
     <p class="footnote">Your data stays on this phone. Deleting the app or clearing Safari website data removes anything you haven’t backed up.</p>
   </main>${tabBar('settings')}`;
@@ -456,7 +466,7 @@ async function restoreFrom(file) {
 }
 
 async function deleteAll() {
-  if (!confirm('Delete all transactions and budgets from this phone? Back up first if you might need them.')) return;
+  if (!confirm('Delete all entries and your starting balance from this phone? Back up first if you might need them.')) return;
   await db.replaceAll({ transactions: [], settings: [] });
   await load();
   toast('All data deleted');
@@ -606,7 +616,7 @@ function renderEditor(id) {
 const routes = {
   home: renderHome,
   activity: renderActivity,
-  budgets: renderBudgets,
+  spending: renderSpending,
   settings: renderSettings,
   add: () => renderEditor(null),
   edit: (id) => renderEditor(id)
@@ -618,18 +628,26 @@ function route() {
     cleanup = null;
   }
   const [name, arg] = location.hash.replace(/^#\/?/, '').split('/');
+  if (name !== 'activity' && name !== 'edit') ui.activity.focus = null;
   (routes[name] || renderHome)(arg);
 }
 
 app.addEventListener('click', (e) => {
   const el = e.target.closest('[data-action]');
   if (!el) return;
+  if (el.tagName === 'A') e.preventDefault();
   const action = el.dataset.action;
   if (action === 'backup') exportBackup();
   else if (action === 'csv') exportCSV();
   else if (action === 'restore') app.querySelector('#restore-file')?.click();
   else if (action === 'delete-all') deleteAll();
   else if (action === 'close') goBack();
+  else if (action === 'starting-balance') openStartingBalanceDialog();
+  else if (action === 'clear-focus') {
+    ui.activity.focus = null;
+    ui.activity.type = 'all';
+    renderActivity();
+  }
 });
 
 window.addEventListener('hashchange', () => {

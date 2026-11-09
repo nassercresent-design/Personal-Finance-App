@@ -1,28 +1,28 @@
 // Categories, money formatting and date helpers.
 
 export const EXPENSE_CATEGORIES = [
-  { id: 'food', name: 'Food', color: '#FDE7D6' },
-  { id: 'transport', name: 'Transport', color: '#DCE9F7' },
-  { id: 'bills', name: 'Bills', color: '#EDE3F7' },
-  { id: 'shopping', name: 'Shopping', color: '#FFE1DC' },
-  { id: 'health', name: 'Health', color: '#DDF0E2' },
-  { id: 'fun', name: 'Fun', color: '#F3EBC9' },
-  { id: 'rent', name: 'Rent', color: '#E3EEF0' },
-  { id: 'other', name: 'Other', color: '#ECEAE4' }
+  { id: 'food', name: 'Food', color: '#FDE7D6' , chart: '#F0955A' },
+  { id: 'transport', name: 'Transport', color: '#DCE9F7' , chart: '#5B97DE' },
+  { id: 'bills', name: 'Bills', color: '#EDE3F7' , chart: '#9878D6' },
+  { id: 'shopping', name: 'Shopping', color: '#FFE1DC' , chart: '#E5675A' },
+  { id: 'health', name: 'Health', color: '#DDF0E2' , chart: '#4CAB71' },
+  { id: 'fun', name: 'Fun', color: '#F3EBC9' , chart: '#D6AE34' },
+  { id: 'rent', name: 'Rent', color: '#E3EEF0' , chart: '#47A0A6' },
+  { id: 'other', name: 'Other', color: '#ECEAE4' , chart: '#9C9A92' }
 ];
 
 export const INCOME_CATEGORIES = [
-  { id: 'salary', name: 'Salary', color: '#DDF0E2' },
-  { id: 'freelance', name: 'Freelance', color: '#DCE9F7' },
-  { id: 'refund', name: 'Refund', color: '#F3EBC9' },
-  { id: 'other-income', name: 'Other income', color: '#ECEAE4' }
+  { id: 'salary', name: 'Salary', color: '#DDF0E2' , chart: '#4CAB71' },
+  { id: 'freelance', name: 'Freelance', color: '#DCE9F7' , chart: '#5B97DE' },
+  { id: 'refund', name: 'Refund', color: '#F3EBC9' , chart: '#D6AE34' },
+  { id: 'other-income', name: 'Other income', color: '#ECEAE4' , chart: '#9C9A92' }
 ];
 
 export const METHODS = ['UPI', 'Cash', 'Card', 'Bank'];
 
 const ALL = [...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES];
 export function category(id) {
-  return ALL.find((c) => c.id === id) || { id, name: 'Other', color: '#ECEAE4' };
+  return ALL.find((c) => c.id === id) || { id, name: 'Other', color: '#ECEAE4', chart: '#9C9A92' };
 }
 
 // Money is stored as whole paise (integers) so totals never drift.
@@ -113,4 +113,10 @@ export function esc(s) {
 
 export function sum(list) {
   return list.reduce((total, t) => total + t.amount, 0);
+}
+
+export function shiftMonth(mk, delta) {
+  const [y, m] = mk.split('-').map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
